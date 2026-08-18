@@ -7,6 +7,13 @@ import {
   Lightformer,
   RoundedBox,
 } from "@react-three/drei";
+import {
+  EffectComposer,
+  DepthOfField,
+  Bloom,
+  Vignette,
+  Noise,
+} from "@react-three/postprocessing";
 import { scrollBus } from "../store";
 
 /* ------------------------------------------------------------------ */
@@ -392,9 +399,13 @@ function Stream({ kind }: { kind: "milk" | "shot" }) {
     const r =
       (isMilk ? 0.05 : 0.032) *
       (0.9 + 0.1 * Math.sin(time * 13 + (isMilk ? 0 : 2)));
-    mesh.scale.set(r, len, r);
+    /* liquid wobble: stream goes elliptical and sways like real poured milk */
+    const ell = 1 + 0.18 * Math.sin(time * 11 + (isMilk ? 0 : 1.3));
+    mesh.scale.set(r * ell, len, r / ell);
+    mesh.rotation.z = Math.sin(time * 5.3 + (isMilk ? 0.7 : 2)) * 0.03;
+    mesh.rotation.x = Math.cos(time * 4.7 + (isMilk ? 0 : 1)) * 0.025;
     mesh.position.set(
-      (isMilk ? 0.33 : -0.22) + Math.sin(time * 7 + (isMilk ? 0 : 1)) * 0.006,
+      (isMilk ? 0.33 : -0.22) + Math.sin(time * 7 + (isMilk ? 0 : 1)) * 0.014,
       topY - len / 2,
       isMilk ? 0.04 : 0.02
     );
@@ -476,6 +487,125 @@ function Splash({ kind }: { kind: "milk" | "shot" }) {
         args={[geo, mat, N]}
         frustumCulled={false}
       />
+    </group>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* impact mound + surface ripples                                      */
+/* ------------------------------------------------------------------ */
+function Mound({ kind }: { kind: "milk" | "shot" }) {
+  const isMilk = kind === "milk";
+  const ref = useRef<THREE.Mesh>(null);
+  const mat = useMemo(
+    () =>
+      isMilk
+        ? new THREE.MeshPhysicalMaterial({
+            color: "#fbf4e6",
+            roughness: 0.25,
+            clearcoat: 0.6,
+            clearcoatRoughness: 0.2,
+            sheen: 0.5,
+            sheenColor: new THREE.Color("#ffffff"),
+            envMapIntensity: 0.8,
+          })
+        : new THREE.MeshPhysicalMaterial({
+            color: "#4a250f",
+            roughness: 0.1,
+            clearcoat: 1,
+            clearcoatRoughness: 0.06,
+            envMapIntensity: 1.3,
+          }),
+    [isMilk]
+  );
+
+  useFrame(() => {
+    const p = sim.p;
+    const m = ref.current;
+    if (!m) return;
+    const fill = isMilk ? W.milkFill(p) : W.shotFill(p);
+    const flow = isMilk ? W.milkFlow(p) : W.shotFlow(p);
+    const surf =
+      (isMilk ? MILK_BASE + MILK_H * fill : SHOT_BASE + SHOT_H * fill) + 0.12;
+    const active = flow > 0.02 && fill < 0.999;
+    m.visible = active;
+    if (!active) return;
+    const s = flow * (isMilk ? 1 : 0.8);
+    m.position.set(
+      isMilk ? 0.33 : -0.22,
+      surf + 0.015,
+      isMilk ? 0.04 : 0.02
+    );
+    m.scale.set(
+      0.17 * s,
+      0.1 * s * (1 + 0.2 * Math.sin(sim.time * 12)),
+      0.17 * s
+    );
+  });
+
+  return (
+    <group position={[0, 0.09, 0]}>
+      <mesh ref={ref} material={mat}>
+        <sphereGeometry args={[1, 20, 12]} />
+      </mesh>
+    </group>
+  );
+}
+
+function Ripple({ kind }: { kind: "milk" | "shot" }) {
+  const isMilk = kind === "milk";
+  const RINGS = 3;
+  const refs = useRef<(THREE.Mesh | null)[]>([]);
+  const mats = useMemo(
+    () =>
+      Array.from(
+        { length: RINGS },
+        () =>
+          new THREE.MeshBasicMaterial({
+            color: isMilk ? "#fff6e2" : "#a05c22",
+            transparent: true,
+            opacity: 0,
+            depthWrite: false,
+          })
+      ),
+    [isMilk]
+  );
+
+  useFrame(() => {
+    const p = sim.p;
+    const fill = isMilk ? W.milkFill(p) : W.shotFill(p);
+    const flow = isMilk ? W.milkFlow(p) : W.shotFlow(p);
+    const surf =
+      (isMilk ? MILK_BASE + MILK_H * fill : SHOT_BASE + SHOT_H * fill) + 0.12;
+    refs.current.forEach((m, i) => {
+      if (!m) return;
+      const c = (p * 6 + i / RINGS) % 1;
+      const vis = flow * (1 - c) * (fill < 0.999 ? 1 : 0);
+      m.visible = vis > 0.02;
+      mats[i].opacity = vis * 0.5;
+      m.scale.setScalar(0.12 + c * (isMilk ? 0.5 : 0.62));
+      m.position.set(
+        isMilk ? 0.33 : -0.22,
+        surf + 0.006,
+        isMilk ? 0.04 : 0.02
+      );
+    });
+  });
+
+  return (
+    <group position={[0, 0.09, 0]}>
+      {Array.from({ length: RINGS }).map((_, i) => (
+        <mesh
+          key={i}
+          ref={(el: THREE.Mesh | null) => {
+            refs.current[i] = el;
+          }}
+          material={mats[i]}
+          rotation-x={-Math.PI / 2}
+        >
+          <torusGeometry args={[1, 0.03, 8, 48]} />
+        </mesh>
+      ))}
     </group>
   );
 }
@@ -889,6 +1019,28 @@ export default function LatteScene({ active }: { active: boolean }) {
       <Straw />
       <Condensation />
       <Dust />
+      <Mound kind="milk" />
+      <Mound kind="shot" />
+      <Ripple kind="milk" />
+      <Ripple kind="shot" />
+
+      {/* camera lens: focus fall-off, specular bloom, vignette, sensor grain */}
+      <EffectComposer multisampling={4}>
+        <DepthOfField
+          focusDistance={0.088}
+          focalLength={0.032}
+          bokehScale={2.6}
+          height={720}
+        />
+        <Bloom
+          intensity={0.4}
+          luminanceThreshold={1.05}
+          luminanceSmoothing={0.25}
+          mipmapBlur
+        />
+        <Vignette eskil={false} offset={0.18} darkness={0.62} />
+        <Noise opacity={0.035} />
+      </EffectComposer>
     </Canvas>
   );
 }
