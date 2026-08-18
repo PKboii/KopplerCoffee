@@ -112,22 +112,34 @@ const CUBES = [
 ];
 
 function Ice() {
-  const refs = useRef<(THREE.Mesh | null)[]>([]);
-  /* non-transmissive clear ice so cubes stay visible through the
-     transmissive glass (three.js excludes transmissive objects from
-     the transmission buffer) */
-  const mat = useMemo(
+  const refs = useRef<(THREE.Group | null)[]>([]);
+  /* glossy clear shell + frosty inner core = real ice-maker cubes.
+     non-transmissive so they stay visible through the glass
+     (three.js excludes transmissive objects from the transmission buffer) */
+  const shellMat = useMemo(
     () =>
       new THREE.MeshPhysicalMaterial({
-        color: "#dff0f5",
-        roughness: 0.1,
+        color: "#e2f2f6",
+        roughness: 0.05,
         metalness: 0,
         transparent: true,
-        opacity: 0.55,
+        opacity: 0.5,
         clearcoat: 1,
-        clearcoatRoughness: 0.08,
-        envMapIntensity: 1.4,
-        specularIntensity: 1.2,
+        clearcoatRoughness: 0.04,
+        envMapIntensity: 1.9,
+        specularIntensity: 1.5,
+        depthWrite: false,
+      }),
+    []
+  );
+  const coreMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: "#f2fbfd",
+        roughness: 0.95,
+        metalness: 0,
+        transparent: true,
+        opacity: 0.3,
         depthWrite: false,
       }),
     []
@@ -166,17 +178,24 @@ function Ice() {
   return (
     <group position={[0, 0.09, 0]}>
       {CUBES.map((c, i) => (
-        <RoundedBox
+        <group
           key={i}
-          ref={(el: THREE.Mesh | null) => {
+          ref={(el: THREE.Group | null) => {
             refs.current[i] = el;
           }}
-          args={[1, 1, 1]}
-          radius={0.15}
-          smoothness={4}
         >
-          <primitive object={mat} attach="material" />
-        </RoundedBox>
+          <RoundedBox args={[1, 1, 1]} radius={0.16} smoothness={4}>
+            <primitive object={shellMat} attach="material" />
+          </RoundedBox>
+          <RoundedBox
+            args={[0.68, 0.68, 0.68]}
+            radius={0.12}
+            smoothness={3}
+            position={[0.02, -0.03, 0.01]}
+          >
+            <primitive object={coreMat} attach="material" />
+          </RoundedBox>
+        </group>
       ))}
     </group>
   );
@@ -186,23 +205,36 @@ function Ice() {
 /* liquids                                                             */
 /* ------------------------------------------------------------------ */
 function Liquids() {
-  const milkRef = useRef<THREE.Mesh>(null);
+  const milkRef = useRef<THREE.Group>(null);
   const shotRef = useRef<THREE.Mesh>(null);
 
+  /* whole milk: warm white, soft sheen, faint clearcoat gloss */
   const milkMat = useMemo(
     () =>
       new THREE.MeshPhysicalMaterial({
-        color: "#f5ead6",
-        roughness: 0.34,
+        color: "#f7efdf",
+        roughness: 0.28,
         metalness: 0,
-        clearcoat: 0.5,
-        clearcoatRoughness: 0.35,
-        envMapIntensity: 0.55,
-        sheen: 0.4,
-        sheenColor: new THREE.Color("#fff6e6"),
+        clearcoat: 0.45,
+        clearcoatRoughness: 0.3,
+        envMapIntensity: 0.75,
+        sheen: 0.65,
+        sheenColor: new THREE.Color("#fff8ea"),
+        sheenRoughness: 0.4,
       }),
     []
   );
+  const foamMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: "#fbf4e4",
+        roughness: 0.95,
+        metalness: 0,
+        envMapIntensity: 0.4,
+      }),
+    []
+  );
+  const bubbleGeo = useMemo(() => new THREE.SphereGeometry(0.024, 8, 6), []);
 
   const shotGeo = useMemo(
     () => new THREE.CylinderGeometry(0.77, 0.735, 1, 48, 1, false),
@@ -221,11 +253,11 @@ function Liquids() {
         fragmentShader: `
           varying vec2 vUv;
           void main() {
-            vec3 deep  = vec3(0.19, 0.10, 0.045);
-            vec3 mid   = vec3(0.42, 0.24, 0.11);
-            vec3 top   = vec3(0.72, 0.50, 0.26);
-            vec3 col = mix(deep, mid, smoothstep(0.0, 0.55, vUv.y));
-            col = mix(col, top, smoothstep(0.55, 1.0, vUv.y));
+            vec3 deep  = vec3(0.15, 0.065, 0.03);
+            vec3 mid   = vec3(0.36, 0.19, 0.085);
+            vec3 top   = vec3(0.64, 0.39, 0.17);
+            vec3 col = mix(deep, mid, smoothstep(0.0, 0.5, vUv.y));
+            col = mix(col, top, smoothstep(0.5, 1.0, vUv.y));
             gl_FragColor = vec4(col, 1.0);
             #include <tonemapping_fragment>
             #include <colorspace_fragment>
@@ -234,16 +266,33 @@ function Liquids() {
       }),
     []
   );
-  const cremaMat = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: "#c79a5f",
-        roughness: 0.48,
-        metalness: 0.05,
-        envMapIntensity: 0.7,
-      }),
-    []
-  );
+  /* crema cap with procedural micro-bubble speckle, like a real shot */
+  const cremaMat = useMemo(() => {
+    const c = document.createElement("canvas");
+    c.width = c.height = 128;
+    const ctx = c.getContext("2d")!;
+    ctx.fillStyle = "#d9a45c";
+    ctx.fillRect(0, 0, 128, 128);
+    for (let i = 0; i < 850; i++) {
+      const x = Math.random() * 128;
+      const y = Math.random() * 128;
+      const r = 0.4 + Math.random() * 1.5;
+      ctx.fillStyle =
+        Math.random() > 0.55
+          ? `rgba(110,58,22,${0.12 + Math.random() * 0.3})`
+          : `rgba(255,228,178,${0.15 + Math.random() * 0.35})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    return new THREE.MeshStandardMaterial({
+      map: tex,
+      roughness: 0.5,
+      metalness: 0,
+      envMapIntensity: 0.8,
+    });
+  }, []);
 
   useFrame(() => {
     const mf = W.milkFill(sim.p);
@@ -266,9 +315,26 @@ function Liquids() {
 
   return (
     <group position={[0, 0.09, 0]}>
-      <mesh ref={milkRef} material={milkMat}>
-        <cylinderGeometry args={[0.77, 0.74, 1, 48]} />
-      </mesh>
+      <group ref={milkRef}>
+        <mesh material={milkMat}>
+          <cylinderGeometry args={[0.77, 0.74, 1, 48]} />
+        </mesh>
+        {/* domed surface tension + microfoam ring at the glass edge */}
+        <mesh material={milkMat} position={[0, 0.5, 0]} scale={[1, 0.13, 1]}>
+          <sphereGeometry args={[0.765, 40, 18]} />
+        </mesh>
+        {Array.from({ length: 14 }).map((_, i) => {
+          const a = (i / 14) * Math.PI * 2;
+          return (
+            <mesh
+              key={i}
+              material={foamMat}
+              geometry={bubbleGeo}
+              position={[Math.cos(a) * 0.71, 0.49, Math.sin(a) * 0.71]}
+            />
+          );
+        })}
+      </group>
       <mesh ref={shotRef} geometry={shotGeo}>
         <primitive object={shotSide} attach="material-0" />
         <primitive object={cremaMat} attach="material-1" />
@@ -284,21 +350,27 @@ function Liquids() {
 function Stream({ kind }: { kind: "milk" | "shot" }) {
   const ref = useRef<THREE.Mesh>(null);
   const isMilk = kind === "milk";
+  /* glossy liquid streams: milk with sheen, espresso with hard clearcoat */
   const mat = useMemo(
     () =>
       isMilk
         ? new THREE.MeshPhysicalMaterial({
-            color: "#f2e6cf",
-            roughness: 0.28,
+            color: "#f8f1e3",
+            roughness: 0.14,
             metalness: 0,
-            clearcoat: 0.8,
-            envMapIntensity: 0.7,
+            clearcoat: 0.95,
+            clearcoatRoughness: 0.1,
+            sheen: 0.6,
+            sheenColor: new THREE.Color("#ffffff"),
+            envMapIntensity: 1.15,
           })
-        : new THREE.MeshStandardMaterial({
-            color: "#4a2913",
-            roughness: 0.22,
-            metalness: 0.1,
-            envMapIntensity: 0.9,
+        : new THREE.MeshPhysicalMaterial({
+            color: "#7a4218",
+            roughness: 0.07,
+            metalness: 0,
+            clearcoat: 1,
+            clearcoatRoughness: 0.05,
+            envMapIntensity: 1.35,
           }),
     [isMilk]
   );
@@ -330,7 +402,8 @@ function Stream({ kind }: { kind: "milk" | "shot" }) {
 
   return (
     <mesh ref={ref} material={mat} position={[0, 0, 0]}>
-      <cylinderGeometry args={[1, 1, 1, 12, 1, true]} />
+      {/* radius tapers downward — a real stream necks as it accelerates */}
+      <cylinderGeometry args={[1, 0.55, 1, 12, 1, true]} />
     </mesh>
   );
 }
@@ -621,6 +694,57 @@ function Dust() {
 /* ------------------------------------------------------------------ */
 /* glass, coaster, floor                                               */
 /* ------------------------------------------------------------------ */
+/* procedural walnut grain for the coaster */
+function makeWoodTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 512;
+  const ctx = c.getContext("2d")!;
+  const base = ctx.createLinearGradient(0, 0, 512, 0);
+  base.addColorStop(0, "#34200e");
+  base.addColorStop(0.5, "#452b13");
+  base.addColorStop(1, "#2e1b0b");
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 170; i++) {
+    const y = Math.random() * 512;
+    const a = 0.04 + Math.random() * 0.09;
+    ctx.strokeStyle =
+      Math.random() > 0.5 ? `rgba(18,9,3,${a})` : `rgba(214,152,92,${a * 0.55})`;
+    ctx.lineWidth = 0.6 + Math.random() * 2.2;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    const wob = 3 + Math.random() * 12;
+    for (let x = 0; x <= 512; x += 24) ctx.lineTo(x, y + Math.sin(x * 0.014 + i) * wob);
+    ctx.stroke();
+  }
+  for (let i = 0; i < 4; i++) {
+    const x = Math.random() * 512;
+    const y = Math.random() * 512;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, 26 + Math.random() * 26);
+    g.addColorStop(0, "rgba(14,7,2,0.5)");
+    g.addColorStop(1, "rgba(14,7,2,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(x - 60, y - 60, 120, 120);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.anisotropy = 8;
+  return t;
+}
+
+/* soft warm light pool under the glass */
+function makePoolTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 256;
+  const ctx = c.getContext("2d")!;
+  const g = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+  g.addColorStop(0, "#3a2510");
+  g.addColorStop(0.5, "#22150a");
+  g.addColorStop(1, "#120c07");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(c);
+}
+
 function Stage() {
   const glassMat = useMemo(
     () =>
@@ -632,13 +756,24 @@ function Stage() {
         thickness: 0.35,
         ior: 1.5,
         transparent: true,
-        envMapIntensity: 1.2,
+        envMapIntensity: 1.35,
         clearcoat: 1,
         clearcoatRoughness: 0.06,
         side: THREE.DoubleSide,
-        specularIntensity: 1,
+        specularIntensity: 1.25,
+        attenuationColor: new THREE.Color("#e9f2ec"),
+        attenuationDistance: 3,
       }),
     []
+  );
+  const woodTex = useMemo(() => makeWoodTexture(), []);
+  const poolTex = useMemo(() => makePoolTexture(), []);
+  useEffect(
+    () => () => {
+      woodTex.dispose();
+      poolTex.dispose();
+    },
+    [woodTex, poolTex]
   );
 
   return (
@@ -663,17 +798,13 @@ function Stage() {
       </mesh>
       <mesh position={[0, 0.078, 0]}>
         <cylinderGeometry args={[1.12, 1.12, 0.02, 64]} />
-        <meshStandardMaterial color="#3b2515" roughness={0.7} />
+        <meshStandardMaterial map={woodTex} roughness={0.6} envMapIntensity={0.5} />
       </mesh>
 
       {/* floor + warm light pool */}
       <mesh rotation-x={-Math.PI / 2} position={[0, -0.001, 0]}>
         <circleGeometry args={[24, 48]} />
-        <meshStandardMaterial color="#120c07" roughness={1} />
-      </mesh>
-      <mesh rotation-x={-Math.PI / 2} position={[0, 0.001, 0]}>
-        <circleGeometry args={[3.4, 48]} />
-        <meshStandardMaterial color="#251709" roughness={1} />
+        <meshStandardMaterial map={poolTex} roughness={1} />
       </mesh>
 
       <ContactShadows
@@ -699,15 +830,16 @@ export default function LatteScene({ active }: { active: boolean }) {
       gl={{ antialias: true, alpha: false }}
       frameloop={active ? "always" : "never"}
       onCreated={({ gl }) => {
-        gl.toneMappingExposure = 1.12;
+        gl.toneMappingExposure = 1.18;
       }}
     >
       <color attach="background" args={["#16100a"]} />
       <fog attach="fog" args={["#16100a", 10, 26]} />
 
-      <ambientLight intensity={0.25} color="#ffe8c8" />
-      <directionalLight position={[4, 6, 3]} intensity={1.2} color="#ffe2b0" />
-      <directionalLight position={[-4, 3, -2]} intensity={0.35} color="#b9c8e8" />
+      <ambientLight intensity={0.3} color="#ffe6c2" />
+      <directionalLight position={[5, 7, 4]} intensity={1.5} color="#ffd9a3" />
+      <directionalLight position={[-6, 4, -4]} intensity={0.7} color="#a8c8de" />
+      <directionalLight position={[3, 4, -6]} intensity={0.45} color="#ffcf9a" />
 
       <Environment resolution={256} frames={1}>
         <Lightformer
